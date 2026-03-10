@@ -111,14 +111,49 @@ By the end of this lab, you will:
 4. Click **"Review + Create"** → **"Create"**.
 5. Wait for deployment (2-3 minutes). When complete, click **"Go to resource"**.
 6. In the left menu, open **Settings** → **Keys** and switch the service to **Role-based access control**. If you still have older clients that use keys, choose **Both** temporarily while you migrate them.
-7. Record the **Service Endpoint URL**.
+
+   **CLI alternative** — if you prefer the command line or need to fix a service that was left on API key only:
+   ```bash
+   az search service update \
+     --name petclinic-search \
+     --resource-group <RESOURCE_GROUP> \
+     --auth-options aadOrApiKey \
+     --aad-auth-failure-mode http401WithBearerChallenge
+   ```
+   On Windows PowerShell replace `\` with `` ` ``.
+
+7. Record the **Service Endpoint URL** (e.g., `https://petclinic-search.search.windows.net`).
 8. In **Access control (IAM)**, assign your local developer identity or dev group these roles:
-    - **Search Service Contributor**
-    - **Search Index Data Contributor**
+    - **Search Service Contributor** — required to create and update indexes
+    - **Search Index Data Contributor** — required to upload and manage documents
     - For production query-only callers, prefer **Search Index Data Reader**
+
+   **CLI alternative:**
+   ```bash
+   # Get your signed-in user's object ID
+   OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+
+   # Build the scope (adjust names to match your deployment)
+   SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Search/searchServices/petclinic-search"
+
+   # Assign Search Service Contributor (index management)
+   az role assignment create --assignee $OBJECT_ID --role "Search Service Contributor" --scope $SCOPE
+
+   # Assign Search Index Data Contributor (document upload)
+   az role assignment create --assignee $OBJECT_ID --role "Search Index Data Contributor" --scope $SCOPE
+   ```
+
+   On Windows PowerShell, use `$env:` style variables:
+   ```powershell
+   $objectId = (az ad signed-in-user show --query id -o tsv)
+   $scope = "/subscriptions/$(az account show --query id -o tsv)/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Search/searchServices/petclinic-search"
+   az role assignment create --assignee $objectId --role "Search Service Contributor" --scope $scope
+   az role assignment create --assignee $objectId --role "Search Index Data Contributor" --scope $scope
+   ```
+
 9. Sign in locally with `az login` or Visual Studio using that same Microsoft Entra ID account before you run the sample code.
 
-> **Note:** Azure AI Search defaults to API keys, but Microsoft Learn now recommends RBAC for application access. New role assignments can take 5-10 minutes to propagate, so a fresh `401` or `403` immediately after setup often resolves after a short wait.
+> **Note:** Azure AI Search defaults to API key only auth, but Microsoft Learn now recommends RBAC for application access. If you skip step 6 and leave the service on API key only, `DefaultAzureCredential` calls will fail with `403 Forbidden` even after role assignment. New role assignments can take 5-10 minutes to propagate, so a fresh `401` or `403` immediately after setup often resolves after a short wait.
 
 #### 1.2 Create a Microsoft Foundry model deployment
 
@@ -316,9 +351,14 @@ python -m pip install sqlalchemy psycopg2-binary
 export PETCLINIC_DB_URL="postgresql+psycopg2://postgres:petclinic@localhost:5432/petclinic"
 python labs/scripts/extract_petclinic_data.py
 
-# Windows
+# Windows (cmd)
 python -m pip install sqlalchemy psycopg2-binary
 set PETCLINIC_DB_URL=postgresql+psycopg2://postgres:petclinic@localhost:5432/petclinic
+python labs/scripts/extract_petclinic_data.py
+
+# Windows (PowerShell)
+python -m pip install sqlalchemy psycopg2-binary
+$env:PETCLINIC_DB_URL = "postgresql+psycopg2://postgres:petclinic@localhost:5432/petclinic"
 python labs/scripts/extract_petclinic_data.py
 ```
 
@@ -506,7 +546,7 @@ export PETCLINIC_DOCUMENT_PATH="labs/data/petclinic-documents.json"
 export AZURE_CLIENT_ID="<managed-identity-client-id>"
 python labs/scripts/bootstrap_search_index.py
 
-# Windows
+# Windows (cmd)
 python -m pip install azure-identity azure-search-documents
 set AZURE_SEARCH_ENDPOINT=https://petclinic-search.search.windows.net
 set AZURE_SEARCH_INDEX_NAME=petclinic-index
@@ -514,31 +554,255 @@ set PETCLINIC_DOCUMENT_PATH=labs/data/petclinic-documents.json
 REM Optional when using a user-assigned managed identity:
 set AZURE_CLIENT_ID=<managed-identity-client-id>
 python labs/scripts/bootstrap_search_index.py
+
+# Windows (PowerShell)
+python -m pip install azure-identity azure-search-documents
+$env:AZURE_SEARCH_ENDPOINT = "https://petclinic-search.search.windows.net"
+$env:AZURE_SEARCH_INDEX_NAME = "petclinic-index"
+$env:PETCLINIC_DOCUMENT_PATH = "labs/data/petclinic-documents.json"
+# Optional when using a user-assigned managed identity:
+$env:AZURE_CLIENT_ID = "<managed-identity-client-id>"
+python labs/scripts/bootstrap_search_index.py
 ```
 
-> **Troubleshooting:** `DefaultAzureCredential` uses your signed-in developer tools locally and managed identity in Azure. If you see `401` or `403`, verify Azure AI Search is configured for RBAC (or **Both** during migration), your identity has **Search Service Contributor** and **Search Index Data Contributor**, and allow a few minutes for role propagation. For query-only production callers, reduce permissions to **Search Index Data Reader**.
+> **Troubleshooting:** `DefaultAzureCredential` uses your signed-in developer tools locally and managed identity in Azure. If you see `401` or `403`:
+>
+> 1. **Check that RBAC auth is enabled on the search service.** Azure AI Search defaults to API key only. If `authOptions` shows `apiKeyOnly`, the service will reject token-based requests even with correct roles. Fix with:
+>    ```bash
+>    az search service update --name petclinic-search --resource-group <RESOURCE_GROUP> --auth-options aadOrApiKey --aad-auth-failure-mode http401WithBearerChallenge
+>    ```
+> 2. **Verify role assignments.** Your identity needs **Search Service Contributor** (index management) and **Search Index Data Contributor** (document upload). Check with:
+>    ```bash
+>    az role assignment list --scope "/subscriptions/<SUB_ID>/resourceGroups/<RG>/providers/Microsoft.Search/searchServices/petclinic-search" --assignee $(az ad signed-in-user show --query id -o tsv) -o table
+>    ```
+> 3. **Wait for propagation.** New role assignments can take 5-10 minutes. Retry after a short wait.
+> 4. For query-only production callers, reduce permissions to **Search Index Data Reader**.
 
 You should see output like:
 
 ```
-✓ Index 'petclinic-index' created successfully.
-Loading documents from JSON...
-✓ Indexed 42 documents
+✓ Index 'petclinic-index' is ready.
+✓ Indexed 27 documents
 
---- Testing Semantic Search ---
 Query: What health issues has Bella had?
-  [87%] Pet: Bella (Dog)
-  [76%] Visit 2024-01-15: Ear infection
-  [72%] Visit 2023-10-22: Ear infection
+  [2.31] Pet: Bella (Dog)
+  [1.85] Visit 2024-01-15: Ear infection
+  [1.72] Visit 2023-10-22: Ear infection
+
+Query: Medications for dogs with allergies
+
+Query: Visits in 2024
+  [1.52] Pet: Lucky (dog)
+  [1.49] Pet: George (snake)
+  [1.49] Pet: Mulligan (dog)
 ```
 
-> **Teaching Moment:** This proves that semantic search understands *meaning*, not just keywords. The query mentions "health issues" but the index found "ear infection"—semantic alignment.
+> **Understanding the scores:** The semantic reranker returns scores ranging from **0 to 4** (not percentages). Higher is better. Scores above ~2 indicate strong relevance; scores around 1–1.5 indicate moderate relevance. Queries that return no results simply mean no documents in the index matched with enough semantic similarity.
+
+> **Teaching Moment:** This proves that semantic search understands *meaning*, not just keywords. The query mentions "health issues" but the index found "ear infection"—semantic alignment. Your exact results will vary depending on the data in your database; if a query returns no results, it means those entities don't exist in your sample data.
 
 ---
 
-### Step 4: Implement RAG in the Java application
+### Step 4: Add Maven Dependencies and Spring Configuration
 
-#### 4.1 Create a Java RAG service
+Before creating any Java source files, add the Azure SDK and Semantic Kernel dependencies to `pom.xml`. Without these the project will not compile.
+
+#### 4.1 Add version properties
+
+Inside `<properties>`, after the JDBC driver versions, add:
+
+```xml
+<!-- Azure AI & Semantic Kernel -->
+<azure-identity.version>1.16.2</azure-identity.version>
+<azure-search.version>11.7.7</azure-search.version>
+<azure-openai.version>1.0.0-beta.16</azure-openai.version>
+<semantic-kernel.version>1.4.3</semantic-kernel.version>
+```
+
+#### 4.2 Add the Semantic Kernel BOM
+
+Inside `<dependencyManagement><dependencies>`, add:
+
+```xml
+<dependency>
+    <groupId>com.microsoft.semantic-kernel</groupId>
+    <artifactId>semantickernel-bom</artifactId>
+    <version>${semantic-kernel.version}</version>
+    <scope>import</scope>
+    <type>pom</type>
+</dependency>
+```
+
+#### 4.3 Add dependencies
+
+Inside `<dependencies>`, add:
+
+```xml
+<!-- Azure AI & Semantic Kernel -->
+<dependency>
+    <groupId>com.azure</groupId>
+    <artifactId>azure-identity</artifactId>
+    <version>${azure-identity.version}</version>
+</dependency>
+<dependency>
+    <groupId>com.azure</groupId>
+    <artifactId>azure-search-documents</artifactId>
+    <version>${azure-search.version}</version>
+</dependency>
+<dependency>
+    <groupId>com.azure</groupId>
+    <artifactId>azure-ai-openai</artifactId>
+    <version>${azure-openai.version}</version>
+</dependency>
+<dependency>
+    <groupId>com.microsoft.semantic-kernel</groupId>
+    <artifactId>semantickernel-api</artifactId>
+</dependency>
+<dependency>
+    <groupId>com.microsoft.semantic-kernel</groupId>
+    <artifactId>semantickernel-aiservices-openai</artifactId>
+</dependency>
+```
+
+> **Note:** The `semantickernel-api` and `semantickernel-aiservices-openai` artifacts inherit their version from the BOM, so you don't need to specify `<version>` for those two.
+
+#### 4.4 Register the config package for component scanning
+
+The existing Spring XML configuration scans `service` and `web` but not `config`. Open `src/main/resources/spring/business-config.xml` and add a second `context:component-scan` for the config package right after the existing service scan:
+
+```xml
+<context:component-scan
+    base-package="org.springframework.samples.petclinic.config"/>
+```
+
+#### 4.5 Quick build check
+
+Run a build now to confirm the new dependencies resolve:
+
+```bash
+./mvnw package -DskipTests
+```
+
+You should see `BUILD SUCCESS`. If Maven cannot resolve a dependency, double-check the version strings and repository access.
+
+---
+
+### Step 5: Implement RAG in the Java application
+
+#### 5.1 Create the retrieval result record
+
+Create `src/main/java/org/springframework/samples/petclinic/service/RetrievalResult.java`:
+
+```java
+package org.springframework.samples.petclinic.service;
+
+import java.time.LocalDate;
+
+/**
+ * A single document retrieved from Azure AI Search.
+ */
+public record RetrievalResult(
+    String entityType,
+    String entityId,
+    String summary,
+    String text,
+    LocalDate createdDate,
+    double confidence,
+    String sourceUrl) {
+}
+```
+
+#### 5.2 Create the search service
+
+Create `src/main/java/org/springframework/samples/petclinic/service/RagSearchService.java`:
+
+```java
+package org.springframework.samples.petclinic.service;
+
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.springframework.stereotype.Service;
+
+import com.azure.core.util.Context;
+import com.azure.search.documents.SearchClient;
+import com.azure.search.documents.SearchDocument;
+import com.azure.search.documents.models.QueryType;
+import com.azure.search.documents.models.SearchOptions;
+import com.azure.search.documents.models.SearchResult;
+import com.azure.search.documents.models.SemanticSearchOptions;
+
+@Service
+public class RagSearchService {
+
+    private final SearchClient searchClient;
+
+    public RagSearchService(SearchClient searchClient) {
+        this.searchClient = searchClient;
+    }
+
+    public List<RetrievalResult> search(String query, int topK) {
+        SearchOptions options = new SearchOptions()
+            .setTop(topK)
+            .setQueryType(QueryType.SEMANTIC)
+            .setSemanticSearchOptions(new SemanticSearchOptions()
+                .setSemanticConfigurationName("default"));
+
+        List<RetrievalResult> results = new ArrayList<>();
+
+        for (SearchResult searchResult : searchClient.search(query, options, Context.NONE)) {
+            SearchDocument doc = searchResult.getDocument(SearchDocument.class);
+
+            Double rerankerScore = null;
+            if (searchResult.getSemanticSearch() != null) {
+                rerankerScore = searchResult.getSemanticSearch().getRerankerScore();
+            }
+            double rawScore = rerankerScore != null ? rerankerScore : searchResult.getScore();
+            double confidence = Math.min(1.0, rawScore / 4.0);
+
+            String entityType = (String) doc.get("entityType");
+            String entityId = (String) doc.get("entityId");
+
+            results.add(new RetrievalResult(
+                entityType,
+                entityId,
+                (String) doc.get("summary"),
+                (String) doc.get("text"),
+                parseDate(doc.get("createdDate")),
+                confidence,
+                buildSourceUrl(entityType, entityId)
+            ));
+        }
+        return results;
+    }
+
+    private static LocalDate parseDate(Object value) {
+        if (value instanceof OffsetDateTime odt) {
+            return odt.toLocalDate();
+        }
+        if (value instanceof String s && !s.isBlank()) {
+            try { return OffsetDateTime.parse(s).toLocalDate(); }
+            catch (Exception ignored) { }
+        }
+        return null;
+    }
+
+    private static String buildSourceUrl(String entityType, String entityId) {
+        if (entityType == null || entityId == null) return "#";
+        return switch (entityType.toLowerCase()) {
+            case "owner" -> "/owners/" + entityId;
+            case "pet", "visit" -> "/owners/" + entityId;
+            default -> "#";
+        };
+    }
+}
+```
+
+> **Design note:** `RagSearchService` normalises the Azure AI Search reranker score (0–4) to a 0–1 range so the downstream `RagKernelService` can apply a simple confidence threshold.
+
+#### 5.3 Create the RAG kernel service
 
 Create `src/main/java/org/springframework/samples/petclinic/service/RagKernelService.java`:
 
@@ -552,7 +816,7 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 import com.microsoft.semantickernel.Kernel;
-import com.microsoft.semantickernel.semanticfunctions.KernelArguments;
+import com.microsoft.semantickernel.semanticfunctions.KernelFunctionArguments;
 
 @Service
 public class RagKernelService {
@@ -588,7 +852,7 @@ public class RagKernelService {
             .map(doc -> "[" + doc.entityType().toUpperCase() + "] " + doc.summary() + "\n" + doc.text())
             .collect(Collectors.joining("\n\n"));
 
-        String answer = kernel.invokePromptAsync(
+        String answer = (String) kernel.invokePromptAsync(
             """
             You are a veterinary assistant helping clinic staff answer questions about patient records.
 
@@ -605,7 +869,7 @@ public class RagKernelService {
 
             ANSWER:
             """,
-            KernelArguments.builder()
+            KernelFunctionArguments.builder()
                 .withVariable("question", question)
                 .withVariable("retrieved_records", retrievedRecords)
                 .build())
@@ -650,9 +914,9 @@ This keeps the app-native path aligned with Spring MVC and Java 17 while still u
 
 ---
 
-### Step 5: Add a Q&A Controller and UI
+### Step 6: Add a Q&A Controller and UI
 
-#### 5.1 Create a RAG API Controller
+#### 6.1 Create a RAG API Controller
 
 Create `src/main/java/org/springframework/samples/petclinic/web/RagController.java`:
 
@@ -691,7 +955,7 @@ public class RagController {
 }
 ```
 
-#### 5.2 Add UI Components
+#### 6.2 Add UI Components
 
 Create `src/main/webapp/resources/js/rag-widget.js`:
 
@@ -935,25 +1199,46 @@ Create `src/main/webapp/resources/css/rag-widget.css`:
 }
 ```
 
-#### 5.3 Register the Widget in the PetClinic Layout
+#### 6.3 Register the Widget in the PetClinic Layout
 
-Update `src/main/webapp/WEB-INF/jsp/owners/ownerDetails.jsp` to include the RAG widget near the pet history table:
+Update `src/main/webapp/WEB-INF/jsp/owners/ownerDetails.jsp` to include the RAG widget. This file uses the `<petclinic:layout>` custom tag, which accepts an optional `customScript` fragment. In this codebase's JSP convention (see `createOrUpdatePetForm.jsp` for an example), `<jsp:attribute>` must appear **before** `<jsp:body>`, and all existing template content moves inside `<jsp:body>`.
+
+Make three changes to `ownerDetails.jsp`:
+
+**Change 1:** Add the `<jsp:attribute>` block and opening `<jsp:body>` tag immediately after the `<petclinic:layout pageName="owners">` tag (line 7). The `<spring:url>` values are inlined directly in the attribute block — they **cannot** appear as separate declarations between the layout tag and `<jsp:attribute>`, or the JSP compiler will treat them as body content and throw an error:
+
+> **Important:** There must be **no blank line** between `<petclinic:layout pageName="owners">` and `<jsp:attribute>`.
 
 ```jsp
-<spring:url value="/resources/css/rag-widget.css" var="ragWidgetCss" />
-<spring:url value="/resources/js/rag-widget.js" var="ragWidgetJs" />
-
-<!-- Add after the pets/visits table -->
-<section class="rag-widget-panel">
-    <h2>Ask About a Patient</h2>
-    <div id="rag-widget-container"></div>
-</section>
-
-<jsp:attribute name="customScript">
-    <link rel="stylesheet" href="${fn:escapeXml(ragWidgetCss)}" />
-    <script src="${fn:escapeXml(ragWidgetJs)}"></script>
-</jsp:attribute>
+<petclinic:layout pageName="owners">
+    <jsp:attribute name="customScript">
+        <link rel="stylesheet" href="<spring:url value='/resources/css/rag-widget.css'/>" />
+        <script src="<spring:url value='/resources/js/rag-widget.js'/>"></script>
+    </jsp:attribute>
+    <jsp:body>
 ```
+
+**Change 2:** Add the RAG widget section after the closing `</table>` tag that ends the Pets and Visits table (line 92 in the original file — look for the `</c:forEach>` followed by `</table>`):
+
+```jsp
+    </table>
+
+    <!-- RAG Q&A widget — add this after the Pets and Visits table -->
+    <section class="rag-widget-panel">
+        <h2>Ask About This Owner's Patients</h2>
+        <div id="rag-widget-container"></div>
+    </section>
+```
+
+**Change 3:** Close the `<jsp:body>` tag just before `</petclinic:layout>` at the end of the file:
+
+```jsp
+    </jsp:body>
+
+</petclinic:layout>
+```
+
+> **Why the restructuring?** The `<petclinic:layout>` tag (defined in `WEB-INF/tags/layout.tag`) renders `<jsp:invoke fragment="customScript" />` after the footer. If you place `<jsp:attribute>` after body content instead of before `<jsp:body>`, some JSP containers will silently ignore it or throw a compile error. The other JSP files in this project (e.g., `createOrUpdatePetForm.jsp`) follow this attribute-then-body pattern already.
 
 Register the clients in `src/main/java/org/springframework/samples/petclinic/config/AiConfiguration.java`:
 
@@ -1023,24 +1308,46 @@ public class AiConfiguration {
 
 ---
 
-### Step 6: Test End-to-End
+### Step 7: Test End-to-End
 
-#### 6.1 Run the Application
+#### 7.1 Run the Application
+
+Since this lab requires data extracted from PostgreSQL (Step 2), start the application with the PostgreSQL profile you configured in Lab 0:
 
 ```bash
 # Build
-./mvnw clean package
+./mvnw clean package -DskipTests
 
-# Run (Windows)
-mvnw.cmd jetty:run-war
+# Run with PostgreSQL (Linux/Mac)
+./mvnw jetty:run-war -P PostgreSQL
 
-# Run (Linux/Mac)
-./mvnw jetty:run-war
+# Run with PostgreSQL (Windows)
+mvnw.cmd -DskipTests jetty:run-war -P PostgreSQL
 ```
+
+> **Windows `clean` failure:** If `mvnw.cmd clean package` fails with "Failed to delete target\tmp" or similar, a previous Jetty session left locked files. Stop Jetty (`Ctrl+C`), delete the `target` directory manually (`rd /s /q target` in cmd or `Remove-Item -Recurse -Force target` in PowerShell), then rerun without `clean`:
+> ```powershell
+> Remove-Item -Recurse -Force target
+> .\mvnw.cmd package -DskipTests
+> ```
+
+> **Compilation errors about missing Azure/Semantic Kernel packages:** If you see errors like `package com.azure.identity does not exist` or `package com.microsoft.semantickernel does not exist`, you've added the Java files from Steps 5-6 before adding the Maven dependencies. Either add the dependencies to `pom.xml` first (covered in Step 4), or remove the premature files and add them back when you reach that step.
+
+> **Note:** The `-DskipTests` flag is the same workaround from Lab 0 for a PostgreSQL-specific JDBC test issue. Make sure your local PostgreSQL instance is running before starting the app (see Lab 0, Step 2A).
+
+> **Environment variables:** The AI configuration properties (`azure.search.endpoint`, `azure.openai.endpoint`, etc.) must be set before startup. You can pass them as system properties:
+> ```bash
+> mvnw.cmd -DskipTests jetty:run-war -P PostgreSQL ^
+>   -Dazure.search.endpoint=https://petclinic-search.search.windows.net ^
+>   -Dazure.search.index-name=petclinic-index ^
+>   -Dazure.openai.endpoint=https://petclinic-foundry.openai.azure.com ^
+>   -Dazure.openai.chat-deployment=gpt-5.2
+> ```
+> Or set them in `src/main/resources/application.properties` (not committed to source control).
 
 Navigate to `http://localhost:8080/` and look for the "Ask About a Patient" widget.
 
-#### 6.2 Test with Real Questions
+#### 7.2 Test with Real Questions
 
 Try these questions:
 
@@ -1075,7 +1382,7 @@ Try these questions:
 
 Before moving forward, verify:
 
-- [ ] Azure AI Search index is populated with 40+ documents
+- [ ] Azure AI Search index is populated with documents (default sample data produces ~27)
 - [ ] Semantic search returns relevant results (test 3+ queries)
 - [ ] RAG API returns grounded answers with citations
 - [ ] Low-confidence questions trigger "I don't know" responses

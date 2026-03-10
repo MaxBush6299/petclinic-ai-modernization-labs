@@ -445,4 +445,34 @@ As you move forward, keep these in mind:
 
 ---
 
+### Optional: Prepare Azure Resources for Lab 1
+
+Lab 1 requires **Azure AI Search** and a **Microsoft Foundry model deployment**. If you want to get a head start, create them now and configure authentication so they're ready when you begin Lab 1.
+
+1. **Create an Azure AI Search service** in the Azure Portal (Standard tier). Record the endpoint URL.
+2. **Enable RBAC authentication** on the search service — by default it uses API key only, which blocks `DefaultAzureCredential`. Switch it in the portal (Settings → Keys → Role-based access control or Both), or via CLI:
+   ```bash
+   az search service update \
+     --name <SEARCH_SERVICE_NAME> \
+     --resource-group <RESOURCE_GROUP> \
+     --auth-options aadOrApiKey \
+     --aad-auth-failure-mode http401WithBearerChallenge
+   ```
+3. **Assign RBAC roles** to your developer identity:
+   ```bash
+   OBJECT_ID=$(az ad signed-in-user show --query id -o tsv)
+   SCOPE="/subscriptions/$(az account show --query id -o tsv)/resourceGroups/<RESOURCE_GROUP>/providers/Microsoft.Search/searchServices/<SEARCH_SERVICE_NAME>"
+
+   az role assignment create --assignee $OBJECT_ID --role "Search Service Contributor" --scope $SCOPE
+   az role assignment create --assignee $OBJECT_ID --role "Search Index Data Contributor" --scope $SCOPE
+   ```
+4. **Set the environment variable** for later use:
+   ```bash
+   export AZURE_SEARCH_ENDPOINT="https://<SEARCH_SERVICE_NAME>.search.windows.net"
+   ```
+
+Full details are in Lab 1 Step 1.
+
+---
+
 **Ready to move on?** In Lab 1, you'll build your first AI feature: an in-app assistant that uses the visit history you explored today to answer owner questions intelligently.
