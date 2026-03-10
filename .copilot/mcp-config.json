@@ -24,6 +24,13 @@
         "TRELLO_API_KEY": "${TRELLO_API_KEY}",
         "TRELLO_TOKEN": "${TRELLO_TOKEN}"
       }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ]
     }
   }
 }
